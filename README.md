@@ -54,7 +54,3 @@ To make changes to the extension:
 1. Ensure the development server is running (`npm run dev`)
 2. Edit the files in the `src` directory
 3. Changes will be automatically reflected in Raycast
-
-## Building for Production
-
-To create a production build:

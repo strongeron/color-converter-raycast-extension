@@ -57,12 +57,10 @@ To make changes to the extension:
 
 ## Test with Github repository
 a. Clone the repository:
-      
       ```
       git clone https://github.com/strongeron/color-converter-raycast-extension.git
       ```
 b. Navigate to the extension directory:
-
       ```
       cd color-converter-raycast-extension
       ```

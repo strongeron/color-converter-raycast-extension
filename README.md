@@ -54,3 +54,25 @@ To make changes to the extension:
 1. Ensure the development server is running (`npm run dev`)
 2. Edit the files in the `src` directory
 3. Changes will be automatically reflected in Raycast
+
+## Test with Github repository
+a. Clone the repository:
+      
+      ```
+      git clone https://github.com/strongeron/color-converter-raycast-extension.git
+      ```
+b. Navigate to the extension directory:
+
+      ```
+      cd color-converter-raycast-extension
+      ```
+
+c. Install the dependencies:
+   ```
+   npm install
+   ```
+
+d. Start the development server:
+   ```
+   npm run dev
+   ```

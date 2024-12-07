@@ -2,6 +2,10 @@
 
 A Raycast extension for converting colors between different formats including RGB, HEX, HSL, Display P3, OKLCH, and more.
 
+## Credits
+
+This extension's color conversion logic is based on the excellent [OKLCH Color Picker](https://github.com/evilmartians/oklch-picker) by Evil Martians ([oklch.com](https://oklch.com)). The original project provides comprehensive tools for working with OKLCH color spaces.
+
 ## Features
 
 - Convert between multiple color formats:
@@ -18,6 +22,15 @@ A Raycast extension for converting colors between different formats including RG
 - Copy colors to clipboard
 - Visual color preview
 - Fallback handling for out-of-gamut colors
+
+## Why OKLCH?
+
+OKLCH offers several advantages over traditional color formats:
+- Native browser support
+- Extended color gamut support (P3, Rec. 2020)
+- Predictable contrast after color transformation
+- No hue shift on chroma changes
+- Better accessibility for palette generation
 
 ## Installation
 

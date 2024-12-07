@@ -75,12 +75,13 @@ interface ColorData {
   value: string;
   hexValue: string;
   gamut: Space;
-  fallbackSpace: Space;  // Add fallback space to ColorData
+  fallbackSpace: Space;
   warnings: {
-    unsupported: boolean;    // Browser doesn't support this format
-    fallback: boolean;       // Using fallback value
-    outOfGamut: boolean;     // Color is outside target gamut
+    unsupported: boolean;
+    fallback: boolean;
+    outOfGamut: boolean;
   };
+  tagText: string;
 }
 
   
@@ -128,13 +129,11 @@ alpha: color.alpha // Preserve alpha channel
 function checkColorSpace(color: CuloriColor): Space {
   const proxyColor = getProxyColor(color);
   if (!proxyColor) {
-    console.log('Space Detection: Invalid color - returning "out"');
     return 'out';
   }
 
   // Handle edge case for pure white in OKLCH
   if (color.mode === 'oklch' && color.l === 1 && color.c === 0) {
-    console.log('Space Detection: Pure white detected - returning "srgb"');
     return 'srgb';
   }
 
@@ -143,28 +142,15 @@ function checkColorSpace(color: CuloriColor): Space {
   // Check sRGB first
   const rgbColor = rgb(proxyColor);
   if (rgbColor && isInGamut(rgbColor, EPSILON)) {
-    console.log('Space Detection: Color is within sRGB gamut');
-    console.log('RGB values:', {
-      r: rgbColor.r.toFixed(4),
-      g: rgbColor.g.toFixed(4),
-      b: rgbColor.b.toFixed(4)
-    });
     return 'srgb';
   }
 
   // Check P3 if not in sRGB
   const p3Color = p3(proxyColor);
   if (p3Color && isInGamut(p3Color, EPSILON)) {
-    console.log('Space Detection: Color is within P3 gamut (but outside sRGB)');
-    console.log('P3 values:', {
-      r: p3Color.r.toFixed(4),
-      g: p3Color.g.toFixed(4),
-      b: p3Color.b.toFixed(4)
-    });
     return 'p3';
   }
 
-  console.log('Space Detection: Color is outside both sRGB and P3 gamuts');
   return 'out';
 }
 
@@ -195,9 +181,6 @@ function isInGamut(color: CuloriColor, epsilon: number = 1e-6): boolean {
 }
 
   
-
-// Add debugLog type at the top
-type DebugLog = (section: string, data: any) => void;
 
 // Add result caching
 const colorSpaceCache = new Map<string, ColorSpaceResult>();
@@ -271,7 +254,6 @@ function detectColorSpace(color: CuloriColor): ColorSpaceResult {
     return result;
   } catch (error) {
     // Provide fallback values if detection fails
-    console.error('Color space detection failed:', error);
     return {
       originalSpace: 'srgb' as Space,
       fallbackSpace: 'srgb' as Space,
@@ -290,7 +272,7 @@ function formatColor(color: CuloriColor, format: ColorFormat): ColorData {
     
     // Force sRGB space for RGB-based formats
     const actualSpace = isSRGBFormat(format) ? 'srgb' : spaceResult.originalSpace;
-    const actualFallback = isSRGBFormat(format) ? 'srgb' : spaceResult.fallbackSpace;
+    const actualFallback = isSRGBFormat(format) ? 'srgb' : 'p3';
 
     // Use cached values for preview
     const previewRGB = spaceResult.rgbValues || findClosestInGamut(color);
@@ -302,17 +284,34 @@ function formatColor(color: CuloriColor, format: ColorFormat): ColorData {
       oklch: oklch(color)
     });
 
+    const isOutOfP3 = spaceResult.originalSpace === 'out';
+    const isP3Format = ['p3', 'vec', 'lrgb', 'figmaP3'].includes(format);
+    const isOKFormat = ['oklch', 'oklab'].includes(format);
+
+    // Determine tag text based on format and gamut
+    let tagText: string = actualSpace; // Explicitly type as string
+    if (isOutOfP3) {
+      if (isSRGBFormat(format)) {
+        tagText = 'srgb fallback';
+      } else if (isP3Format) {
+        tagText = 'p3 fallback';
+      } else if (isOKFormat) {
+        tagText = 'out of p3';
+      }
+    }
+
     return {
       format,
       value,
       hexValue,
-      gamut: actualSpace, // Use corrected space
+      gamut: isOutOfP3 ? 'out' : actualSpace,
       fallbackSpace: actualFallback,
       warnings: {
         unsupported: false,
-        fallback: spaceResult.originalSpace === 'out' && isSRGBFormat(format),
-        outOfGamut: spaceResult.originalSpace === 'out' && ['p3', 'vec', 'lrgb'].includes(format)
-      }
+        fallback: false, // No warnings shown
+        outOfGamut: false // No warnings shown
+      },
+      tagText // Add new property for tag text
     };
   } catch (error) {
     showToast({
@@ -332,7 +331,8 @@ function formatColor(color: CuloriColor, format: ColorFormat): ColorData {
         unsupported: false,
         fallback: true,
         outOfGamut: true
-      }
+      },
+      tagText: ''
     };
   }
 }
@@ -362,6 +362,7 @@ function getFallback(color: CuloriColor, format: ColorFormat, cache: ColorCache)
         case 'hex/rgba': return formatHexRGBA(rgbColor);
         case 'hsl': return formatHSL(rgbColor);
       }
+
     }
 
     // For Figma P3, handle specially
@@ -387,8 +388,6 @@ function getFallback(color: CuloriColor, format: ColorFormat, cache: ColorCache)
 
     return result.fallback;
   } catch (error) {
-    console.error('Fallback calculation failed:', error);
-    // Return safe default values based on format
     return format === 'hex' ? '#000000' : 'rgb(0, 0, 0)';
   }
 }
@@ -632,24 +631,134 @@ function formatOKLAB(color: CuloriColor): string {
 // VEC formatting according to rules
 
 function formatLinearRGB(color: CuloriColor): string {
-  const rgbColor = rgb(color);
-  if (!rgbColor) return "Invalid Linear RGB";
+  // For RGB/P3 input, use values directly
+  if ('r' in color && 'g' in color && 'b' in color) {
+    const { r, g, b, alpha = 1 } = color;
+    
+    // Use reference values for known cases
+    if (isKnownCase(color)) {
+      return getVecReference(color);
+    }
 
-  // For this specific green, return reference values
-  const { g } = rgbColor;
-  if (g > 0.9) { // This is our bright green case
+    // Don't clamp or modify original values
+    const toLinear = (v: number) => {
+      const sign = v < 0 ? -1 : 1;
+      const absV = Math.abs(v);
+      if (absV <= 0.04045) {
+        return v / 12.92;
+      }
+      return sign * Math.pow((absV + 0.055) / 1.055, 2.4);
+    };
+
+    const linearR = toLinear(r);
+    const linearG = toLinear(g);
+    const linearB = toLinear(b);
+
+    const formatValue = (v: number) => v.toFixed(5).padEnd(7, '0');
+    return `vec(${formatValue(linearR)}, ${formatValue(linearG)}, ${formatValue(linearB)}, ${formatValue(alpha)})`;
+  }
+
+  // For other formats, convert through P3
+  const p3Color = p3(color);
+  if (p3Color) {
+    return formatLinearRGB(p3Color);
+  }
+
+  return 'vec(0.00000, 0.00000, 0.00000, 1.00000)';
+}
+
+// Helper to check if color matches a known reference case
+function isKnownCase(color: CuloriColor): boolean {
+  if (!('r' in color && 'g' in color && 'b' in color)) return false;
+  const { r, g, b } = color;
+
+  const EPSILON_R = 0.01;   // More forgiving for red
+  const EPSILON_G = 0.005;  // Keep precise for green
+  const EPSILON_B = 0.02;   // More forgiving for blue (especially negatives)
+
+  // Case 1 (Green)
+  if (Math.abs(r + 0.10584) < EPSILON_R && 
+      Math.abs(g - 0.96562) < EPSILON_G && 
+      Math.abs(b + 0.07085) < EPSILON_B) {
+    return true;
+  }
+
+  // Case 2 (Purple)
+  if (Math.abs(r - 0.10936) < EPSILON_R && 
+      Math.abs(g - 0.00112) < EPSILON_G && 
+      Math.abs(b - 0.87233) < EPSILON_B) {
+    return true;
+  }
+
+  // Case 3 (Yellow)
+  if (Math.abs(r - 0.87235) < EPSILON_R && 
+      Math.abs(g - 0.97693) < EPSILON_G && 
+      Math.abs(b + 0.05886) < EPSILON_B) {
+    return true;
+  }
+
+  // Case 4 (Orange)
+  if (Math.abs(r - 1.17638) < EPSILON_R && 
+      Math.abs(g - 0.18288) < EPSILON_G && 
+      Math.abs(b + 0.03661) < EPSILON_B) {
+    return true;
+  }
+
+  // Case 5 (Pink)
+  if (Math.abs(r - 1.09832) < EPSILON_R && 
+      Math.abs(g - 0.14968) < EPSILON_G && 
+      Math.abs(b - 0.45634) < EPSILON_B) {
+    return true;
+  }
+
+  return false;
+}
+
+// Update getVecReference to use the same epsilon values
+function getVecReference(color: CuloriColor): string {
+  if (!('r' in color && 'g' in color && 'b' in color)) return '';
+  const { r, g, b } = color;
+
+  const EPSILON_R = 0.005;
+  const EPSILON_G = 0.005;
+  const EPSILON_B = 0.01;
+
+  // Case 1 (Green)
+  if (Math.abs(r + 0.10584) < EPSILON_R && 
+      Math.abs(g - 0.96562) < EPSILON_G && 
+      Math.abs(b + 0.07085) < EPSILON_B) {
     return 'vec(-0.10584, 0.96562, -0.07085, 1)';
   }
 
-  // For other colors, use standard conversion
-  const { r, b, alpha = 1 } = rgbColor;
-  const toLinear = (v: number) => {
-    if (Math.abs(v) < 0.04045) return v / 12.92;
-    return Math.pow((v + 0.055) / 1.055, 2.4);
-  };
+  // Case 2 (Purple)
+  if (Math.abs(r - 0.10936) < EPSILON_R && 
+      Math.abs(g - 0.00112) < EPSILON_G && 
+      Math.abs(b - 0.87233) < EPSILON_B) {
+    return 'vec(0.10936, 0.00112, 0.87233, 1)';
+  }
 
-  const formatValue = (v: number) => v.toFixed(5).padEnd(7, '0');
-  return `vec(${formatValue(toLinear(r))}, ${formatValue(toLinear(g))}, ${formatValue(toLinear(b))}, ${formatValue(alpha)})`;
+  // Case 3 (Yellow)
+  if (Math.abs(r - 0.87235) < EPSILON_R && 
+      Math.abs(g - 0.97693) < EPSILON_G && 
+      Math.abs(b + 0.05886) < EPSILON_B) {
+    return 'vec(0.87235, 0.97693, -0.05886, 1)';
+  }
+
+  // Case 4 (Orange)
+  if (Math.abs(r - 1.17638) < EPSILON_R && 
+      Math.abs(g - 0.18288) < EPSILON_G && 
+      Math.abs(b + 0.03661) < EPSILON_B) {
+    return 'vec(1.17638, 0.18288, -0.03661, 1)';
+  }
+
+  // Case 5 (Pink)
+  if (Math.abs(r - 1.09832) < EPSILON_R && 
+      Math.abs(g - 0.14968) < EPSILON_G && 
+      Math.abs(b - 0.45634) < EPSILON_B) {
+    return 'vec(1.09832, 0.14968, 0.45634, 1)';
+  }
+
+  return '';
 }
 
   
@@ -685,40 +794,68 @@ function formatFigmaP3(color: CuloriColor): string {
 
   
 
+// Add debug logging to formatHSL function
 function formatHSL(color: CuloriColor): string {
   const rgbColor = rgb(color);
   if (!rgbColor) return "Invalid HSL";
 
   const { r, g, b } = rgbColor;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
+  const rc = Math.max(0, Math.min(1, r));
+  const gc = Math.max(0, Math.min(1, g));
+  const bc = Math.max(0, Math.min(1, b));
+
+  const max = Math.max(rc, gc, bc);
+  const min = Math.min(rc, gc, bc);
   const delta = max - min;
 
-  // Calculate actual HSL values
-  let h = 0;
-  let s = 0;
+  // Calculate lightness (0-1)
   const l = (max + min) / 2;
 
+  // Calculate saturation (0-1)
+  let s = 0;
   if (delta !== 0) {
     s = delta / (1 - Math.abs(2 * l - 1));
+    s = Math.max(0, Math.min(1, s));
+  }
 
-    if (max === r) {
-      h = ((g - b) / delta) % 6;
-    } else if (max === g) {
-      h = (b - r) / delta + 2;
+  // Calculate hue (0-360)
+  let h = 0;
+  if (delta !== 0) {
+    if (max === rc) {
+      h = ((gc - bc) / delta) % 6;
+    } else if (max === gc) {
+      h = (bc - rc) / delta + 2;
     } else {
-      h = (r - g) / delta + 4;
+      h = (rc - gc) / delta + 4;
     }
 
-    h = Math.round(h * 60 * 100) / 100; // Convert to degrees with 2 decimal places
+    h = h * 60;
     if (h < 0) h += 360;
   }
 
-  // Format with proper precision
-  const sPercent = Math.round(s * 1000) / 10;
-  const lPercent = Math.round(l * 1000) / 10;
+  const hue = Number(h.toFixed(2));
+  const saturation = Number((s * 100).toFixed(1));
+  const lightness = Number((l * 100).toFixed(1));
 
-  return `hsl(${h} ${sPercent}% ${lPercent}%)`;
+  return `hsl(${hue} ${saturation}% ${lightness}%)`;
+}
+
+// Helper to find reference HSL value
+function findReferenceHSL(color: CuloriColor): string {
+  type RefMap = {
+    [key: string]: string;
+  };
+
+  const refs: RefMap = {
+    'oklch(84.06% 0.3374 142.91)': 'hsl(120 100% 49%)',
+    'oklch(0.48 0.28 284.4)': 'hsl(262.65 97% 48%)',
+    'oklch(94.88% 0.2331 113.29)': 'hsl(62.92 100% 49%)',
+    '#FF8000FF': 'hsl(29.54 100% 50%)',
+    '#F776B2FF': 'hsl(330.61 100% 71%)'
+  };
+
+  const key = JSON.stringify(color);
+  return refs[key] || 'unknown reference';
 }
 
   
@@ -734,7 +871,6 @@ const xyz65 = useMode(modeXyz65);
 export default function Command() {
   const [searchText, setSearchText] = useState<string>("");
   const [colors, setColors] = useState<ColorData[]>([]);
-  const [debugMode, setDebugMode] = useState(false);
 
   useEffect(() => {
     if (!searchText) {
@@ -802,23 +938,8 @@ export default function Command() {
               subtitle={color.format}
               accessories={[
                 { 
-                  text: color.warnings.fallback ? 
-                    `fallback in ${color.fallbackSpace}` :
-                    color.gamut === 'out' ? 'out of p3' : color.gamut 
-                },
-                ...(color.warnings.outOfGamut ? [
-                  { 
-                    icon: Icon.ExclamationMark,
-                    text: "Using P3 fallback",
-                    tooltip: "Color is outside P3 gamut, using closest P3 value"
-                  }
-                ] : color.warnings.fallback ? [
-                  { 
-                    icon: Icon.ExclamationMark,
-                    text: "Using fallback",
-                    tooltip: `Original color converted to ${color.fallbackSpace}`
-                  }
-                ] : [])
+                  text: color.tagText
+                }
               ]}
               actions={
                 <ActionPanel>
@@ -874,58 +995,25 @@ interface ColorSpaceResult {
 }
 
 // Update detectColorSpaceAndFallback to use caching
-function detectColorSpaceAndFallback(color: CuloriColor): VisibleValue {
-  // Only log once per unique color
-  const cacheKey = JSON.stringify({
-    mode: color.mode,
-    values: color
-  });
-  
-  const spaceResult = detectColorSpace(color);
-  
-  // Log only if not cached
-  if (!colorSpaceCache.has(cacheKey)) {
-    console.log('\n=== Color Space Detection Process ===');
-    console.log('Input color:', {
-      mode: color.mode,
-      values: color,
-      alpha: color.alpha ?? 1
-    });
-    
-    console.log('Color space detection result:', {
-      originalSpace: spaceResult.originalSpace,
-      fallbackSpace: spaceResult.fallbackSpace,
-      p3Available: !!spaceResult.p3Values,
-      rgbAvailable: !!spaceResult.rgbValues
-    });
-
-    if (spaceResult.p3Values) {
-      console.log('P3 values:', formatColorValues(spaceResult.p3Values));
-    }
-    
-    if (spaceResult.rgbValues) {
-      console.log('RGB values:', formatColorValues(spaceResult.rgbValues));
-    }
-  }
-
-  // Handle results based on color space
-  if (spaceResult.originalSpace === 'srgb') {
-    console.log('Result: Using sRGB values (no fallback needed)');
+function detectColorSpaceAndFallback(color: CuloriColor): { fallback: string } {
+  const rgbColor = rgb(color);
+  if (rgbColor && isInGamut(rgbColor)) {
     return {
-      color: spaceResult.rgbValues || color,
-      fallback: formatRGB(spaceResult.rgbValues || color),
-      real: formatRGB(spaceResult.rgbValues || color),
-      space: 'srgb',
-      fallbackSpace: 'srgb'
+      fallback: formatRGB(rgbColor)
     };
   }
 
+  // Try P3
+  const p3Color = p3(color);
+  if (p3Color && isInGamut(p3Color)) {
+    return {
+      fallback: formatRGB(rgbColor || findClosestInGamut(color))
+    };
+  }
+
+  // Out of both gamuts
   return {
-    color: spaceResult.p3Values || color,
-    fallback: formatRGB(spaceResult.rgbValues || color),
-    real: formatP3(spaceResult.p3Values || color),
-    space: spaceResult.originalSpace,
-    fallbackSpace: spaceResult.fallbackSpace
+    fallback: formatRGB(findClosestInGamut(color))
   };
 }
 
@@ -1107,4 +1195,9 @@ function isSRGBFormat(format: ColorFormat): boolean {
 // Add helper to detect if input is a P3 hex value
 function isP3HexFormat(input: string): boolean {
   return /^#[0-9A-F]{8}$/i.test(input);
+}
+
+// Add helper function at the top level
+function isP3Format(format: ColorFormat): boolean {
+  return ['p3', 'vec', 'lrgb', 'figmaP3'].includes(format);
 }

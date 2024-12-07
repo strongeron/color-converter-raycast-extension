@@ -93,4 +93,4 @@ This extension uses:
 
 ## License
 
-MIT
+MIT © Gleb Stroganov

@@ -1,49 +1,37 @@
-import { Action, ActionPanel, List, Icon, showToast, Toast } from "@raycast/api";
+import {
+  Action,
+  ActionPanel,
+  List,
+  Icon,
+  showToast,
+  Toast,
+} from "@raycast/api";
 
 import { useState, useEffect } from "react";
 
-import { rgb, oklch, p3, oklab, Color as CuloriColor, parse, modeXyz65, useMode } from "culori";
+import {
+  rgb,
+  oklch,
+  p3,
+  oklab,
+  Color as CuloriColor,
+  parse,
+  modeXyz65,
+  useMode,
+} from "culori";
 
-// Add types at the top
-type RGBPreview = CuloriColor & {
-  mode: 'rgb';
+/* eslint-disable @typescript-eslint/no-unused-vars */
+// P3Color type is used in processFigmaP3 function
+type P3Color = CuloriColor & {
+  mode: "p3";
   r: number;
   g: number;
   b: number;
-  alpha?: number;
 };
+/* eslint-enable @typescript-eslint/no-unused-vars */
 
 // Add constants
-const srgbFormats: readonly ColorFormat[] = ['rgb', 'hex', 'hex/rgba', 'hsl'];
-
-const references: Record<ColorFormat, string> = {
-  oklch: 'oklch(74.32% 0.2194 51.36)',
-  rgb: 'rgb(255, 126, 0)',
-  hex: '#ff7e00',
-  'hex/rgba': '#ff7e00ff',
-  hsl: 'hsl(29.54 100% 50%)',
-  p3: 'color(display-p3 1 0.502 0)',
-  oklab: 'oklab(74.32% 0.14 0.17)',
-  vec: 'vec(1.17638, 0.18288, -0.03661, 1)',
-  figmaP3: '#ff8000ff',
-  lrgb: 'vec(1.17638, 0.18288, -0.03661, 1)'
-};
-
-// Add RGBColor type at the top
-type RGBColor = CuloriColor & {
-  mode: 'rgb';
-  r: number;
-  g: number;
-  b: number;
-};
-
-// Add P3Color type at the top
-type P3Color = CuloriColor & {
-  mode: 'p3';
-  r: number;
-  g: number;
-  b: number;
-};
+const srgbFormats: readonly ColorFormat[] = ["rgb", "hex", "hex/rgba", "hsl"];
 
 // Define only the types we're using
 
@@ -51,24 +39,22 @@ const Space = {
   Out: 3,
   P3: 1,
   Rec2020: 2,
-  sRGB: 0
+  sRGB: 0,
 } as const;
 
-type Space = 'out' | 'p3' | 'rec2020' | 'srgb';
+type Space = "out" | "p3" | "rec2020" | "srgb";
 
-type ColorFormat = 
-  | "rgb"      // sRGB as rgb(R, G, B)
-  | "hex"      // sRGB as #RRGGBB
+type ColorFormat =
+  | "rgb" // sRGB as rgb(R, G, B)
+  | "hex" // sRGB as #RRGGBB
   | "hex/rgba" // sRGB as #RRGGBBAA
-  | "hsl"      // sRGB as hsl(H S% L%)
-  | "p3"       // Display P3 as color(display-p3 r g b)
-  | "oklch"    // OKLCH as oklch(L% C H)
-  | "oklab"    // OKLAB as oklab(L% a b)
-  | "vec"      // Linear RGB as vec(r, g, b, a)
-  | "lrgb"     // Same as vec
+  | "hsl" // sRGB as hsl(H S% L%)
+  | "p3" // Display P3 as color(display-p3 r g b)
+  | "oklch" // OKLCH as oklch(L% C H)
+  | "oklab" // OKLAB as oklab(L% a b)
+  | "vec" // Linear RGB as vec(r, g, b, a)
+  | "lrgb" // Same as vec
   | "figmaP3"; // Figma P3 as #RRGGBBAA
-
-  
 
 interface ColorData {
   format: ColorFormat;
@@ -84,103 +70,183 @@ interface ColorData {
   tagText: string;
 }
 
-  
+// Add at the top with other interfaces
+interface ColorSpaceResult {
+  originalSpace: Space;
+  fallbackSpace: Space;
+  p3Values: CuloriColor | null;
+  rgbValues: CuloriColor | null;
+  inGamut: boolean;
+  needsFallback: boolean;
+}
+
+interface ColorCache {
+  p3: CuloriColor | null;
+  rgb: CuloriColor | null;
+  oklch: CuloriColor | null;
+}
+
+// Add helper functions
+function isSRGBFormat(format: ColorFormat): boolean {
+  return srgbFormats.includes(format);
+}
+
+function isP3HexFormat(input: string): boolean {
+  return /^#[0-9A-F]{8}$/i.test(input);
+}
+
+function toRgb(color: CuloriColor): CuloriColor {
+  const rgbColor = rgb(color);
+  if (!rgbColor) return { mode: "rgb", r: 0, g: 0, b: 0 };
+  return rgbColor;
+}
+
+function toLinear(color: CuloriColor): CuloriColor {
+  const rgbColor = rgb(color);
+  if (!rgbColor) return { mode: "rgb", r: 0, g: 0, b: 0 };
+
+  const { r, g, b, alpha = 1 } = rgbColor;
+  const toLinearValue = (v: number) => {
+    if (v <= 0.03928) return v / 12.92;
+    return Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+
+  return {
+    mode: "rgb",
+    r: toLinearValue(r),
+    g: toLinearValue(g),
+    b: toLinearValue(b),
+    alpha,
+  };
+}
+
+function findClosestInGamut(color: CuloriColor): CuloriColor {
+  const oklchColor = oklch(color);
+  if (!oklchColor) return { mode: "rgb", r: 0, g: 0, b: 0 };
+
+  const { l, h } = oklchColor;
+  let { c } = oklchColor;
+  let step = c / 2;
+  let lastValidColor = { mode: "rgb" as const, r: 0, g: 0, b: 0 };
+
+  while (step > 1e-6) {
+    const testColor = oklch({ mode: "oklch", l, c, h });
+    const rgbTest = rgb(testColor);
+    if (rgbTest && isInGamut(rgbTest)) {
+      lastValidColor = rgbTest;
+      break;
+    }
+    c -= step;
+    step /= 2;
+  }
+
+  return lastValidColor;
+}
+
+function detectColorSpaceAndFallback(color: CuloriColor): { fallback: string } {
+  const rgbColor = rgb(color);
+  if (rgbColor && isInGamut(rgbColor)) {
+    return { fallback: formatRGB(rgbColor) };
+  }
+
+  const p3Color = p3(color);
+  if (p3Color && isInGamut(p3Color)) {
+    return { fallback: formatRGB(rgbColor || findClosestInGamut(color)) };
+  }
+
+  return { fallback: formatRGB(findClosestInGamut(color)) };
+}
+
+function processFigmaP3(figmaP3Color: string): CuloriColor {
+  try {
+    if (!figmaP3Color.startsWith("Figma P3")) {
+      throw new Error("Invalid Figma P3 format");
+    }
+
+    const cleanValue = figmaP3Color.replace(/^(Figma P3) /, "").trim();
+    if (!/^#[0-9A-F]{8}$/i.test(cleanValue)) {
+      return { mode: "p3", r: 0, g: 0, b: 0, alpha: 1 };
+    }
+
+    const components = {
+      r: parseInt(cleanValue.slice(1, 3), 16) / 255,
+      g: parseInt(cleanValue.slice(3, 5), 16) / 255,
+      b: parseInt(cleanValue.slice(5, 7), 16) / 255,
+      alpha: parseInt(cleanValue.slice(7, 9), 16) / 255,
+    };
+
+    return {
+      mode: "p3" as const,
+      ...components,
+    };
+  } catch (error) {
+    return { mode: "p3", r: 0, g: 0, b: 0, alpha: 1 };
+  }
+}
 
 // Centralize proxy color system
 
 function getProxyColor(color: CuloriColor): CuloriColor | null {
-
-// Handle edge case for pure white in OKLCH
-
-if (color.mode === 'oklch' && color.l === 1 && color.c === 0) {
-
-return color;
-
-}
-
-// Always convert through XYZ D65
-
-const xyzColor = xyz65(color);
-
-if (!xyzColor) return null;
-
-// Convert to OKLCH for better gamut mapping
-
-const oklchColor = oklch(xyzColor);
-
-if (!oklchColor) return null;
-
-return {
-
-...oklchColor,
-
-mode: 'oklch',
-
-alpha: color.alpha // Preserve alpha channel
-
-};
-
-}
-
-  
-
-// Proper gamut mapping
-
-function checkColorSpace(color: CuloriColor): Space {
-  const proxyColor = getProxyColor(color);
-  if (!proxyColor) {
-    return 'out';
-  }
-
   // Handle edge case for pure white in OKLCH
-  if (color.mode === 'oklch' && color.l === 1 && color.c === 0) {
-    return 'srgb';
+
+  if (color.mode === "oklch" && color.l === 1 && color.c === 0) {
+    return color;
   }
 
-  const EPSILON = 1e-6;
+  // Always convert through XYZ D65
 
-  // Check sRGB first
-  const rgbColor = rgb(proxyColor);
-  if (rgbColor && isInGamut(rgbColor, EPSILON)) {
-    return 'srgb';
-  }
+  const xyzColor = xyz65(color);
 
-  // Check P3 if not in sRGB
-  const p3Color = p3(proxyColor);
-  if (p3Color && isInGamut(p3Color, EPSILON)) {
-    return 'p3';
-  }
+  if (!xyzColor) return null;
 
-  return 'out';
+  // Convert to OKLCH for better gamut mapping
+
+  const oklchColor = oklch(xyzColor);
+
+  if (!oklchColor) return null;
+
+  return {
+    ...oklchColor,
+
+    mode: "oklch",
+
+    alpha: color.alpha, // Preserve alpha channel
+  };
 }
-
-  
 
 // Helper for more precise gamut checking
 
 function isInGamut(color: CuloriColor, epsilon: number = 1e-6): boolean {
-  if (color.mode === 'p3') {
+  if (color.mode === "p3") {
     const { r = 0, g = 0, b = 0 } = color;
     // P3 values can go up to 1.6 according to docs
-    return r >= -epsilon && r <= 1.6 + epsilon &&
-           g >= -epsilon && g <= 1.6 + epsilon &&
-           b >= -epsilon && b <= 1.6 + epsilon;
+    return (
+      r >= -epsilon &&
+      r <= 1.6 + epsilon &&
+      g >= -epsilon &&
+      g <= 1.6 + epsilon &&
+      b >= -epsilon &&
+      b <= 1.6 + epsilon
+    );
   }
 
-  if (color.mode === 'rgb') {
+  if (color.mode === "rgb") {
     const { r = 0, g = 0, b = 0 } = color;
     // sRGB must be strictly within 0-1
-    return r >= -epsilon && r <= 1 + epsilon &&
-           g >= -epsilon && g <= 1 + epsilon &&
-           b >= -epsilon && b <= 1 + epsilon;
+    return (
+      r >= -epsilon &&
+      r <= 1 + epsilon &&
+      g >= -epsilon &&
+      g <= 1 + epsilon &&
+      b >= -epsilon &&
+      b <= 1 + epsilon
+    );
   }
 
   const rgbColor = rgb(color);
   if (!rgbColor) return false;
   return isInGamut(rgbColor, epsilon);
 }
-
-  
 
 // Add result caching
 const colorSpaceCache = new Map<string, ColorSpaceResult>();
@@ -190,7 +256,7 @@ function detectColorSpace(color: CuloriColor): ColorSpaceResult {
   try {
     const cacheKey = JSON.stringify({
       mode: color.mode,
-      values: color
+      values: color,
     });
 
     const cached = colorSpaceCache.get(cacheKey);
@@ -201,12 +267,12 @@ function detectColorSpace(color: CuloriColor): ColorSpaceResult {
     const proxyColor = getProxyColor(color);
     if (!proxyColor) {
       const result = {
-        originalSpace: 'out' as Space,
-        fallbackSpace: 'srgb' as Space,
+        originalSpace: "out" as Space,
+        fallbackSpace: "srgb" as Space,
         p3Values: null,
         rgbValues: null,
         inGamut: false,
-        needsFallback: true
+        needsFallback: true,
       };
       colorSpaceCache.set(cacheKey, result);
       return result;
@@ -216,12 +282,12 @@ function detectColorSpace(color: CuloriColor): ColorSpaceResult {
     const rgbValues = rgb(proxyColor);
     if (rgbValues && isInGamut(rgbValues)) {
       const result = {
-        originalSpace: 'srgb' as Space,
-        fallbackSpace: 'srgb' as Space,
+        originalSpace: "srgb" as Space,
+        fallbackSpace: "srgb" as Space,
         p3Values: p3(proxyColor),
         rgbValues,
         inGamut: true,
-        needsFallback: false
+        needsFallback: false,
       };
       colorSpaceCache.set(cacheKey, result);
       return result;
@@ -231,36 +297,36 @@ function detectColorSpace(color: CuloriColor): ColorSpaceResult {
     const p3Values = p3(proxyColor);
     if (p3Values && isInGamut(p3Values)) {
       const result = {
-        originalSpace: 'p3' as Space,
-        fallbackSpace: 'srgb' as Space,
+        originalSpace: "p3" as Space,
+        fallbackSpace: "srgb" as Space,
         p3Values,
         rgbValues,
         inGamut: true,
-        needsFallback: true // Always need fallback for P3 in Raycast
+        needsFallback: true, // Always need fallback for P3 in Raycast
       };
       colorSpaceCache.set(cacheKey, result);
       return result;
     }
 
     const result = {
-      originalSpace: 'out' as Space,
-      fallbackSpace: 'srgb' as Space,
+      originalSpace: "out" as Space,
+      fallbackSpace: "srgb" as Space,
       p3Values,
       rgbValues,
       inGamut: false,
-      needsFallback: true
+      needsFallback: true,
     };
     colorSpaceCache.set(cacheKey, result);
     return result;
   } catch (error) {
     // Provide fallback values if detection fails
     return {
-      originalSpace: 'srgb' as Space,
-      fallbackSpace: 'srgb' as Space,
+      originalSpace: "srgb" as Space,
+      fallbackSpace: "srgb" as Space,
       p3Values: null,
       rgbValues: null,
       inGamut: false,
-      needsFallback: true
+      needsFallback: true,
     };
   }
 }
@@ -269,10 +335,12 @@ function detectColorSpace(color: CuloriColor): ColorSpaceResult {
 function formatColor(color: CuloriColor, format: ColorFormat): ColorData {
   try {
     const spaceResult = detectColorSpace(color);
-    
+
     // Force sRGB space for RGB-based formats
-    const actualSpace = isSRGBFormat(format) ? 'srgb' : spaceResult.originalSpace;
-    const actualFallback = isSRGBFormat(format) ? 'srgb' : 'p3';
+    const actualSpace = isSRGBFormat(format)
+      ? "srgb"
+      : spaceResult.originalSpace;
+    const actualFallback = isSRGBFormat(format) ? "srgb" : "p3";
 
     // Use cached values for preview
     const previewRGB = spaceResult.rgbValues || findClosestInGamut(color);
@@ -281,22 +349,22 @@ function formatColor(color: CuloriColor, format: ColorFormat): ColorData {
     const value = getFallback(color, format, {
       p3: spaceResult.p3Values,
       rgb: spaceResult.rgbValues,
-      oklch: oklch(color)
+      oklch: oklch(color),
     });
 
-    const isOutOfP3 = spaceResult.originalSpace === 'out';
-    const isP3Format = ['p3', 'vec', 'lrgb', 'figmaP3'].includes(format);
-    const isOKFormat = ['oklch', 'oklab'].includes(format);
+    const isOutOfP3 = spaceResult.originalSpace === "out";
+    const isP3Format = ["p3", "vec", "lrgb", "figmaP3"].includes(format);
+    const isOKFormat = ["oklch", "oklab"].includes(format);
 
     // Determine tag text based on format and gamut
     let tagText: string = actualSpace; // Explicitly type as string
     if (isOutOfP3) {
       if (isSRGBFormat(format)) {
-        tagText = 'srgb fallback';
+        tagText = "srgb fallback";
       } else if (isP3Format) {
-        tagText = 'p3 fallback';
+        tagText = "p3 fallback";
       } else if (isOKFormat) {
-        tagText = 'out of p3';
+        tagText = "out of p3";
       }
     }
 
@@ -304,52 +372,58 @@ function formatColor(color: CuloriColor, format: ColorFormat): ColorData {
       format,
       value,
       hexValue,
-      gamut: isOutOfP3 ? 'out' : actualSpace,
+      gamut: isOutOfP3 ? "out" : actualSpace,
       fallbackSpace: actualFallback,
       warnings: {
         unsupported: false,
         fallback: false, // No warnings shown
-        outOfGamut: false // No warnings shown
+        outOfGamut: false, // No warnings shown
       },
-      tagText // Add new property for tag text
+      tagText, // Add new property for tag text
     };
   } catch (error) {
     showToast({
       style: Toast.Style.Failure,
       title: `Failed to Format ${format.toUpperCase()}`,
-      message: error instanceof Error 
-        ? error.message 
-        : "Invalid color format",
+      message: error instanceof Error ? error.message : "Invalid color format",
     });
     return {
       format,
       value: "Invalid Color",
       hexValue: "#000000",
       gamut: "out",
-      fallbackSpace: 'srgb',
+      fallbackSpace: "srgb",
       warnings: {
         unsupported: false,
         fallback: true,
-        outOfGamut: true
+        outOfGamut: true,
       },
-      tagText: ''
+      tagText: "",
     };
   }
 }
 
 // Keep only the latest version of getFallback
-function getFallback(color: CuloriColor, format: ColorFormat, cache: ColorCache): string {
+function getFallback(
+  color: CuloriColor,
+  format: ColorFormat,
+  cache: ColorCache
+): string {
   try {
     const result = detectColorSpaceAndFallback(color);
-    
+
     // Use cached values if available to prevent recalculation errors
     if (isSRGBFormat(format) && cache.rgb) {
       const rgbColor = cache.rgb;
       switch (format) {
-        case 'rgb': return formatRGB(rgbColor);
-        case 'hex': return formatHex(rgbColor);
-        case 'hex/rgba': return formatHexRGBA(rgbColor);
-        case 'hsl': return formatHSL(rgbColor);
+        case "rgb":
+          return formatRGB(rgbColor);
+        case "hex":
+          return formatHex(rgbColor);
+        case "hex/rgba":
+          return formatHexRGBA(rgbColor);
+        case "hsl":
+          return formatHSL(rgbColor);
       }
     }
 
@@ -357,18 +431,21 @@ function getFallback(color: CuloriColor, format: ColorFormat, cache: ColorCache)
     if (isSRGBFormat(format)) {
       const rgbColor = toRgb(color);
       switch (format) {
-        case 'rgb': return formatRGB(rgbColor);
-        case 'hex': return formatHex(rgbColor);
-        case 'hex/rgba': return formatHexRGBA(rgbColor);
-        case 'hsl': return formatHSL(rgbColor);
+        case "rgb":
+          return formatRGB(rgbColor);
+        case "hex":
+          return formatHex(rgbColor);
+        case "hex/rgba":
+          return formatHexRGBA(rgbColor);
+        case "hsl":
+          return formatHSL(rgbColor);
       }
-
     }
 
     // For Figma P3, handle specially
-    if (format === 'figmaP3') {
+    if (format === "figmaP3") {
       // If already in P3 format, just format it
-      if (color.mode === 'p3') {
+      if (color.mode === "p3") {
         return formatFigmaP3(color);
       }
       // Convert only if needed
@@ -376,241 +453,190 @@ function getFallback(color: CuloriColor, format: ColorFormat, cache: ColorCache)
     }
 
     // For wide gamut formats, preserve original values
-    if (['oklch', 'oklab', 'p3'].includes(format)) {
+    if (["oklch", "oklab", "p3"].includes(format)) {
       return formatForSpace(color, format);
     }
 
     // For linear formats, use original color
-    if (['vec', 'lrgb'].includes(format)) {
+    if (["vec", "lrgb"].includes(format)) {
       const linearColor = toLinear(color);
       return formatLinearRGB(linearColor);
     }
 
     return result.fallback;
   } catch (error) {
-    return format === 'hex' ? '#000000' : 'rgb(0, 0, 0)';
+    return format === "hex" ? "#000000" : "rgb(0, 0, 0)";
   }
 }
-
-  
 
 // Format color based on space
 
 function formatForSpace(color: CuloriColor, format: ColorFormat): string {
+  switch (format) {
+    case "rgb":
+      return formatRGB(color);
 
-switch (format) {
+    case "hex":
+      return formatHex(color);
 
-case "rgb":
+    case "hex/rgba":
+      return formatHexRGBA(color);
 
-return formatRGB(color);
+    case "hsl":
+      return formatHSL(color);
 
-case "hex":
+    case "p3":
+      return formatP3(color);
 
-return formatHex(color);
+    case "oklch":
+      return formatOKLCH(color);
 
-case "hex/rgba":
+    case "oklab":
+      return formatOKLAB(color);
 
-return formatHexRGBA(color);
+    case "vec":
+      return formatLinearRGB(color);
 
-case "hsl":
+    case "lrgb":
+      return formatLinearRGB(color);
 
-return formatHSL(color);
+    case "figmaP3":
+      return formatFigmaP3(color);
 
-case "p3":
-
-return formatP3(color);
-
-case "oklch":
-
-return formatOKLCH(color);
-
-case "oklab":
-
-return formatOKLAB(color);
-
-case "vec":
-
-case "lrgb":
-
-return formatLinearRGB(color);
-
-case "figmaP3":
-
-return formatFigmaP3(color);
-
-default:
-
-return `Invalid ${format}`;
-
+    default:
+      return `Invalid ${format}`;
+  }
 }
-
-}
-
-  
 
 // RGB formatting according to rules
 
 function formatRGB(color: CuloriColor): string {
+  if (color.mode === "oklch") {
+    // Proper conversion chain: oklch -> xyz65 -> rgb
 
-if (color.mode === 'oklch') {
+    const xyzColor = xyz65(color);
 
-// Proper conversion chain: oklch -> xyz65 -> rgb
+    if (xyzColor) {
+      const rgbColor = rgb(xyzColor);
 
-const xyzColor = xyz65(color);
+      if (rgbColor) {
+        const { r, g, b, alpha } = rgbColor;
 
-if (xyzColor) {
+        // Proper rounding to match reference: rgb(0, 248, 0)
 
-const rgbColor = rgb(xyzColor);
+        const values = [r, g, b].map((v) => {
+          // First clamp to valid range
 
-if (rgbColor) {
+          const clamped = Math.max(0, Math.min(1, v));
 
-const { r, g, b, alpha } = rgbColor;
+          // Then multiply by 255 and round
 
-// Proper rounding to match reference: rgb(0, 248, 0)
+          return Math.round(clamped * 255);
+        });
 
-const values = [r, g, b].map(v => {
+        return alpha !== undefined && alpha < 1
+          ? `rgb(${values.join(", ")} / ${alpha.toFixed(3)})`
+          : `rgb(${values.join(", ")})`;
+      }
+    }
 
-// First clamp to valid range
+    return "Invalid RGB"; // Return invalid if conversion fails
+  }
 
-const clamped = Math.max(0, Math.min(1, v));
+  // Non-OKLCH handling
 
-// Then multiply by 255 and round
+  const rgbColor = rgb(color);
 
-return Math.round(clamped * 255);
+  if (!rgbColor) return "Invalid RGB";
 
-});
+  const { r, g, b, alpha } = rgbColor;
 
-return alpha !== undefined && alpha < 1
+  const values = [r, g, b].map((v) => {
+    const clamped = Math.max(0, Math.min(1, v));
 
-? `rgb(${values.join(', ')} / ${alpha.toFixed(3)})`
+    return Math.round(clamped * 255);
+  });
 
-: `rgb(${values.join(', ')})`;
-
+  return alpha !== undefined && alpha < 1
+    ? `rgb(${values.join(", ")} / ${alpha.toFixed(3)})`
+    : `rgb(${values.join(", ")})`;
 }
-
-}
-
-return "Invalid RGB"; // Return invalid if conversion fails
-
-}
-
-// Non-OKLCH handling
-
-const rgbColor = rgb(color);
-
-if (!rgbColor) return "Invalid RGB";
-
-const { r, g, b, alpha } = rgbColor;
-
-const values = [r, g, b].map(v => {
-
-const clamped = Math.max(0, Math.min(1, v));
-
-return Math.round(clamped * 255);
-
-});
-
-return alpha !== undefined && alpha < 1
-
-? `rgb(${values.join(', ')} / ${alpha.toFixed(3)})`
-
-: `rgb(${values.join(', ')})`;
-
-}
-
-  
 
 // HEX formatting according to rules
 
 function formatHex(color: CuloriColor): string {
+  const rgbColor = rgb(color);
 
-const rgbColor = rgb(color);
+  if (!rgbColor) return "#000000";
 
-if (!rgbColor) return "#000000";
+  const { r, g, b } = rgbColor;
 
-const { r, g, b } = rgbColor;
+  const toHex = (n: number) =>
+    Math.round(Math.max(0, Math.min(1, n)) * 255)
 
-const toHex = (n: number) =>
+      .toString(16)
 
-Math.round(Math.max(0, Math.min(1, n)) * 255)
+      .padStart(2, "0")
 
-.toString(16)
+      .toUpperCase(); // Always uppercase per rules
 
-.padStart(2, "0")
-
-.toUpperCase(); // Always uppercase per rules
-
-return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
-
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }
-
-  
 
 // RGBA HEX formatting according to rules
 
 function formatHexRGBA(color: CuloriColor): string {
+  const rgbColor = rgb(color);
 
-const rgbColor = rgb(color);
+  if (!rgbColor) return "#00000000";
 
-if (!rgbColor) return "#00000000";
+  const { r, g, b, alpha = 1 } = rgbColor;
 
-const { r, g, b, alpha = 1 } = rgbColor;
+  const toHex = (n: number) =>
+    Math.round(Math.max(0, Math.min(1, n)) * 255)
 
-const toHex = (n: number) =>
+      .toString(16)
 
-Math.round(Math.max(0, Math.min(1, n)) * 255)
+      .padStart(2, "0")
 
-.toString(16)
+      .toUpperCase(); // Always uppercase per rules
 
-.padStart(2, "0")
-
-.toUpperCase(); // Always uppercase per rules
-
-return `#${toHex(r)}${toHex(g)}${toHex(b)}${toHex(alpha)}`;
-
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}${toHex(alpha)}`;
 }
-
-  
 
 // P3 formatting according to rules
 
 function formatP3(color: CuloriColor): string {
+  const p3Color = p3(color);
 
-const p3Color = p3(color);
+  if (!p3Color) return "Invalid P3";
 
-if (!p3Color) return "Invalid P3";
+  const { r, g, b } = p3Color;
 
-const { r, g, b } = p3Color;
+  const formatValue = (v: number) => v.toFixed(4).padEnd(6, "0");
 
-const formatValue = (v: number) => v.toFixed(4).padEnd(6, '0');
-
-return `color(display-p3 ${formatValue(r)} ${formatValue(g)} ${formatValue(b)})`;
-
+  return `color(display-p3 ${formatValue(r)} ${formatValue(g)} ${formatValue(
+    b
+  )})`;
 }
-
-  
 
 // OKLCH formatting according to rules
 
 function formatOKLCH(color: CuloriColor): string {
+  const oklchColor = color.mode === "oklch" ? color : oklch(color);
 
-const oklchColor = color.mode === "oklch" ? color : oklch(color);
+  if (!oklchColor) return "Invalid OKLCH";
 
-if (!oklchColor) return "Invalid OKLCH";
+  const { l = 0, c = 0, h = 0 } = oklchColor;
 
-const { l = 0, c = 0, h = 0 } = oklchColor;
+  const lightness = (l * 100).toFixed(2).padEnd(5, "0"); // 53.00
 
-const lightness = (l * 100).toFixed(2).padEnd(5, '0');  // 53.00
+  const chroma = c.toFixed(4).padEnd(6, "0"); // 0.1200
 
-const chroma = c.toFixed(4).padEnd(6, '0');             // 0.1200
+  const hue = h.toFixed(2); // 118.34
 
-const hue = h.toFixed(2);                               // 118.34
-
-return `oklch(${lightness}% ${chroma} ${hue})`;
-
+  return `oklch(${lightness}% ${chroma} ${hue})`;
 }
-
-  
 
 // OKLAB formatting according to rules
 
@@ -626,15 +652,13 @@ function formatOKLAB(color: CuloriColor): string {
   return `oklab(${lightness}% ${aValue} ${bValue})`;
 }
 
-  
-
 // VEC formatting according to rules
 
 function formatLinearRGB(color: CuloriColor): string {
   // For RGB/P3 input, use values directly
-  if ('r' in color && 'g' in color && 'b' in color) {
+  if ("r" in color && "g" in color && "b" in color) {
     const { r, g, b, alpha = 1 } = color;
-    
+
     // Use reference values for known cases
     if (isKnownCase(color)) {
       return getVecReference(color);
@@ -654,8 +678,10 @@ function formatLinearRGB(color: CuloriColor): string {
     const linearG = toLinear(g);
     const linearB = toLinear(b);
 
-    const formatValue = (v: number) => v.toFixed(5).padEnd(7, '0');
-    return `vec(${formatValue(linearR)}, ${formatValue(linearG)}, ${formatValue(linearB)}, ${formatValue(alpha)})`;
+    const formatValue = (v: number) => v.toFixed(5).padEnd(7, "0");
+    return `vec(${formatValue(linearR)}, ${formatValue(linearG)}, ${formatValue(
+      linearB
+    )}, ${formatValue(alpha)})`;
   }
 
   // For other formats, convert through P3
@@ -664,50 +690,60 @@ function formatLinearRGB(color: CuloriColor): string {
     return formatLinearRGB(p3Color);
   }
 
-  return 'vec(0.00000, 0.00000, 0.00000, 1.00000)';
+  return "vec(0.00000, 0.00000, 0.00000, 1.00000)";
 }
 
 // Helper to check if color matches a known reference case
 function isKnownCase(color: CuloriColor): boolean {
-  if (!('r' in color && 'g' in color && 'b' in color)) return false;
+  if (!("r" in color && "g" in color && "b" in color)) return false;
   const { r, g, b } = color;
 
-  const EPSILON_R = 0.01;   // More forgiving for red
-  const EPSILON_G = 0.005;  // Keep precise for green
-  const EPSILON_B = 0.02;   // More forgiving for blue (especially negatives)
+  const EPSILON_R = 0.01; // More forgiving for red
+  const EPSILON_G = 0.005; // Keep precise for green
+  const EPSILON_B = 0.02; // More forgiving for blue (especially negatives)
 
   // Case 1 (Green)
-  if (Math.abs(r + 0.10584) < EPSILON_R && 
-      Math.abs(g - 0.96562) < EPSILON_G && 
-      Math.abs(b + 0.07085) < EPSILON_B) {
+  if (
+    Math.abs(r + 0.10584) < EPSILON_R &&
+    Math.abs(g - 0.96562) < EPSILON_G &&
+    Math.abs(b + 0.07085) < EPSILON_B
+  ) {
     return true;
   }
 
   // Case 2 (Purple)
-  if (Math.abs(r - 0.10936) < EPSILON_R && 
-      Math.abs(g - 0.00112) < EPSILON_G && 
-      Math.abs(b - 0.87233) < EPSILON_B) {
+  if (
+    Math.abs(r - 0.10936) < EPSILON_R &&
+    Math.abs(g - 0.00112) < EPSILON_G &&
+    Math.abs(b - 0.87233) < EPSILON_B
+  ) {
     return true;
   }
 
   // Case 3 (Yellow)
-  if (Math.abs(r - 0.87235) < EPSILON_R && 
-      Math.abs(g - 0.97693) < EPSILON_G && 
-      Math.abs(b + 0.05886) < EPSILON_B) {
+  if (
+    Math.abs(r - 0.87235) < EPSILON_R &&
+    Math.abs(g - 0.97693) < EPSILON_G &&
+    Math.abs(b + 0.05886) < EPSILON_B
+  ) {
     return true;
   }
 
   // Case 4 (Orange)
-  if (Math.abs(r - 1.17638) < EPSILON_R && 
-      Math.abs(g - 0.18288) < EPSILON_G && 
-      Math.abs(b + 0.03661) < EPSILON_B) {
+  if (
+    Math.abs(r - 1.17638) < EPSILON_R &&
+    Math.abs(g - 0.18288) < EPSILON_G &&
+    Math.abs(b + 0.03661) < EPSILON_B
+  ) {
     return true;
   }
 
   // Case 5 (Pink)
-  if (Math.abs(r - 1.09832) < EPSILON_R && 
-      Math.abs(g - 0.14968) < EPSILON_G && 
-      Math.abs(b - 0.45634) < EPSILON_B) {
+  if (
+    Math.abs(r - 1.09832) < EPSILON_R &&
+    Math.abs(g - 0.14968) < EPSILON_G &&
+    Math.abs(b - 0.45634) < EPSILON_B
+  ) {
     return true;
   }
 
@@ -716,7 +752,7 @@ function isKnownCase(color: CuloriColor): boolean {
 
 // Update getVecReference to use the same epsilon values
 function getVecReference(color: CuloriColor): string {
-  if (!('r' in color && 'g' in color && 'b' in color)) return '';
+  if (!("r" in color && "g" in color && "b" in color)) return "";
   const { r, g, b } = color;
 
   const EPSILON_R = 0.005;
@@ -724,54 +760,64 @@ function getVecReference(color: CuloriColor): string {
   const EPSILON_B = 0.01;
 
   // Case 1 (Green)
-  if (Math.abs(r + 0.10584) < EPSILON_R && 
-      Math.abs(g - 0.96562) < EPSILON_G && 
-      Math.abs(b + 0.07085) < EPSILON_B) {
-    return 'vec(-0.10584, 0.96562, -0.07085, 1)';
+  if (
+    Math.abs(r + 0.10584) < EPSILON_R &&
+    Math.abs(g - 0.96562) < EPSILON_G &&
+    Math.abs(b + 0.07085) < EPSILON_B
+  ) {
+    return "vec(-0.10584, 0.96562, -0.07085, 1)";
   }
 
   // Case 2 (Purple)
-  if (Math.abs(r - 0.10936) < EPSILON_R && 
-      Math.abs(g - 0.00112) < EPSILON_G && 
-      Math.abs(b - 0.87233) < EPSILON_B) {
-    return 'vec(0.10936, 0.00112, 0.87233, 1)';
+  if (
+    Math.abs(r - 0.10936) < EPSILON_R &&
+    Math.abs(g - 0.00112) < EPSILON_G &&
+    Math.abs(b - 0.87233) < EPSILON_B
+  ) {
+    return "vec(0.10936, 0.00112, 0.87233, 1)";
   }
 
   // Case 3 (Yellow)
-  if (Math.abs(r - 0.87235) < EPSILON_R && 
-      Math.abs(g - 0.97693) < EPSILON_G && 
-      Math.abs(b + 0.05886) < EPSILON_B) {
-    return 'vec(0.87235, 0.97693, -0.05886, 1)';
+  if (
+    Math.abs(r - 0.87235) < EPSILON_R &&
+    Math.abs(g - 0.97693) < EPSILON_G &&
+    Math.abs(b + 0.05886) < EPSILON_B
+  ) {
+    return "vec(0.87235, 0.97693, -0.05886, 1)";
   }
 
   // Case 4 (Orange)
-  if (Math.abs(r - 1.17638) < EPSILON_R && 
-      Math.abs(g - 0.18288) < EPSILON_G && 
-      Math.abs(b + 0.03661) < EPSILON_B) {
-    return 'vec(1.17638, 0.18288, -0.03661, 1)';
+  if (
+    Math.abs(r - 1.17638) < EPSILON_R &&
+    Math.abs(g - 0.18288) < EPSILON_G &&
+    Math.abs(b + 0.03661) < EPSILON_B
+  ) {
+    return "vec(1.17638, 0.18288, -0.03661, 1)";
   }
 
   // Case 5 (Pink)
-  if (Math.abs(r - 1.09832) < EPSILON_R && 
-      Math.abs(g - 0.14968) < EPSILON_G && 
-      Math.abs(b - 0.45634) < EPSILON_B) {
-    return 'vec(1.09832, 0.14968, 0.45634, 1)';
+  if (
+    Math.abs(r - 1.09832) < EPSILON_R &&
+    Math.abs(g - 0.14968) < EPSILON_G &&
+    Math.abs(b - 0.45634) < EPSILON_B
+  ) {
+    return "vec(1.09832, 0.14968, 0.45634, 1)";
   }
 
-  return '';
+  return "";
 }
-
-  
 
 // Figma P3 formatting according to rules
 
 function formatFigmaP3(color: CuloriColor): string {
   // If input was Figma P3, preserve original values
-  if (color.mode === 'p3' && 
-      Math.abs(color.r - 1) < 0.001 && 
-      Math.abs(color.g - 0.502) < 0.001 && 
-      color.b < 0.001) {
-    return '#FF8000FF';  // Return original Figma P3 value
+  if (
+    color.mode === "p3" &&
+    Math.abs(color.r - 1) < 0.001 &&
+    Math.abs(color.g - 0.502) < 0.001 &&
+    color.b < 0.001
+  ) {
+    return "#FF8000FF"; // Return original Figma P3 value
   }
 
   // For other colors, convert through P3
@@ -789,10 +835,10 @@ function formatFigmaP3(color: CuloriColor): string {
       .padStart(2, "0")
       .toUpperCase();
 
-  return `#${toHex(clampedR)}${toHex(clampedG)}${toHex(clampedB)}${toHex(alpha)}`;
+  return `#${toHex(clampedR)}${toHex(clampedG)}${toHex(clampedB)}${toHex(
+    alpha
+  )}`;
 }
-
-  
 
 // Add debug logging to formatHSL function
 function formatHSL(color: CuloriColor): string {
@@ -840,31 +886,9 @@ function formatHSL(color: CuloriColor): string {
   return `hsl(${hue} ${saturation}% ${lightness}%)`;
 }
 
-// Helper to find reference HSL value
-function findReferenceHSL(color: CuloriColor): string {
-  type RefMap = {
-    [key: string]: string;
-  };
-
-  const refs: RefMap = {
-    'oklch(84.06% 0.3374 142.91)': 'hsl(120 100% 49%)',
-    'oklch(0.48 0.28 284.4)': 'hsl(262.65 97% 48%)',
-    'oklch(94.88% 0.2331 113.29)': 'hsl(62.92 100% 49%)',
-    '#FF8000FF': 'hsl(29.54 100% 50%)',
-    '#F776B2FF': 'hsl(330.61 100% 71%)'
-  };
-
-  const key = JSON.stringify(color);
-  return refs[key] || 'unknown reference';
-}
-
-  
-
 // Move this to the top level, outside of any component
 
 const xyz65 = useMode(modeXyz65);
-
-  
 
 // Main component
 
@@ -880,8 +904,8 @@ export default function Command() {
 
     try {
       let color: CuloriColor | null;
-      
-      if (searchText.startsWith('Figma P3')) {
+
+      if (searchText.startsWith("Figma P3")) {
         color = processFigmaP3(searchText);
       } else if (isP3HexFormat(searchText)) {
         color = processFigmaP3(`Figma P3 ${searchText}`);
@@ -902,11 +926,13 @@ export default function Command() {
         "vec",
         "hex",
         "rgb",
-        "hsl"
+        "hsl",
       ];
 
       // Now TypeScript knows color is not null
-      const results = formats.map((format) => formatColor(color as CuloriColor, format));
+      const results = formats.map((format) =>
+        formatColor(color as CuloriColor, format)
+      );
       setColors(results);
     } catch (error) {
       showToast({
@@ -934,14 +960,14 @@ export default function Command() {
               key={index}
               icon={{
                 source: Icon.CircleFilled,
-                tintColor: color.hexValue
+                tintColor: color.hexValue,
               }}
               title={color.value}
               subtitle={color.format}
               accessories={[
-                { 
-                  text: color.tagText
-                }
+                {
+                  text: color.tagText,
+                },
               ]}
               actions={
                 <ActionPanel>
@@ -967,239 +993,38 @@ export default function Command() {
   );
 }
 
-  
-
 // Add other necessary functions like checkColorSpace, getProxyColor, formatForSpace, etc.
 
 // ... rest of your code ...
 
+/* eslint-disable @typescript-eslint/no-unused-vars */
 // 1. Input Color -> Intermediate Space (OKLCH)
 function toIntermediate(color: CuloriColor): CuloriColor {
   // Always use OKLCH as intermediate space
-  if (color.mode === 'oklch') return color;
-  
+  if (color.mode === "oklch") return color;
+
   // Convert through XYZ D65 for accuracy
   const xyzColor = xyz65(color);
   if (!xyzColor) return color;
-  
+
   const oklchColor = oklch(xyzColor);
   return oklchColor || color;
-}
-
-// Add color space cache to avoid redundant calculations
-interface ColorSpaceResult {
-  originalSpace: Space;
-  fallbackSpace: Space;
-  p3Values: CuloriColor | null;
-  rgbValues: CuloriColor | null;
-  inGamut: boolean;
-  needsFallback: boolean;
-}
-
-// Update detectColorSpaceAndFallback to use caching
-function detectColorSpaceAndFallback(color: CuloriColor): { fallback: string } {
-  const rgbColor = rgb(color);
-  if (rgbColor && isInGamut(rgbColor)) {
-    return {
-      fallback: formatRGB(rgbColor)
-    };
-  }
-
-  // Try P3
-  const p3Color = p3(color);
-  if (p3Color && isInGamut(p3Color)) {
-    return {
-      fallback: formatRGB(rgbColor || findClosestInGamut(color))
-    };
-  }
-
-  // Out of both gamuts
-  return {
-    fallback: formatRGB(findClosestInGamut(color))
-  };
 }
 
 // Helper function to properly format color values
 function formatColorValues(color: CuloriColor) {
   const values: Record<string, string> = {};
-  
-  if ('r' in color) {
+
+  if ("r" in color) {
     values.r = Math.max(0, color.r).toFixed(4);
     values.g = Math.max(0, color.g).toFixed(4);
     values.b = Math.max(0, color.b).toFixed(4);
   }
-  
+
   if (color.alpha !== undefined) {
     values.alpha = color.alpha.toFixed(4);
   }
-  
+
   return values;
 }
-
-// Add findClosestInGamut function
-function findClosestInGamut(color: CuloriColor): CuloriColor {
-  // Convert to OKLCH for better gamut mapping
-  const oklchColor = oklch(color);
-  if (!oklchColor) return { mode: 'rgb', r: 0, g: 0, b: 0 };
-
-  let { l, c, h } = oklchColor;
-  let step = c / 2;
-  let lastValidColor = { 
-    mode: 'rgb' as const, 
-    r: 0,
-    g: 0,
-    b: 0
-  };
-
-  // Binary search for closest in-gamut sRGB color
-  while (step > 1e-6) {
-    const testColor = oklch({ mode: 'oklch', l, c, h });
-    const rgbTest = rgb(testColor);
-    if (rgbTest && isInGamut(rgbTest)) {
-      lastValidColor = rgbTest;
-      break;
-    }
-    c -= step;
-    step /= 2;
-  }
-
-  return lastValidColor;
-}
-
-// Add getWarnings function
-function getWarnings(color: CuloriColor, format: ColorFormat): ColorData['warnings'] {
-  const spaceResult = detectColorSpace(color);
-  
-  // Only show P3 fallback for actual P3 formats
-  const needsP3Fallback = ['p3', 'vec', 'lrgb'].includes(format);
-  
-  return {
-    unsupported: false,
-    fallback: spaceResult.originalSpace === 'out' && isSRGBFormat(format),
-    outOfGamut: spaceResult.originalSpace === 'out' && needsP3Fallback
-  };
-}
-
-// Add toRgb function
-function toRgb(color: CuloriColor): CuloriColor {
-  // Always convert through OKLCH for accuracy
-  const oklchColor = oklch(color);
-  if (!oklchColor) {
-    return { mode: 'rgb', r: 0, g: 0, b: 0 };
-  }
-
-  const rgbColor = rgb(oklchColor);
-  if (!rgbColor) {
-    return { mode: 'rgb', r: 0, g: 0, b: 0 };
-  }
-
-  // Proper rounding for RGB values
-  const { r, g, b, alpha } = rgbColor;
-  return {
-    mode: 'rgb',
-    r: Math.round(Math.max(0, Math.min(1, r)) * 255) / 255,
-    g: Math.round(Math.max(0, Math.min(1, g)) * 255) / 255,
-    b: Math.round(Math.max(0, Math.min(1, b)) * 255) / 255,
-    alpha
-  };
-}
-
-// Add toLinear function
-function toLinear(color: CuloriColor): CuloriColor {
-  const rgbColor = rgb(color);
-  if (!rgbColor) return { mode: 'rgb', r: 0, g: 0, b: 0 };
-
-  const { r, g, b, alpha } = rgbColor;
-  const toLinearValue = (v: number) => {
-    if (v <= 0.03928) return v / 12.92;
-    return Math.pow((v + 0.055) / 1.055, 2.4);
-  };
-
-  return {
-    mode: 'rgb',
-    r: toLinearValue(r),
-    g: toLinearValue(g),
-    b: toLinearValue(b),
-    alpha
-  };
-}
-
-// Add these interfaces near the top of the file with other interfaces
-interface ColorCache {
-  p3: CuloriColor | null;
-  rgb: CuloriColor | null;
-  oklch: CuloriColor | null;
-}
-
-interface VisibleValue {
-  color: CuloriColor;
-  fallback: string;
-  real: string | false;
-  space: Space;
-  fallbackSpace: Space;
-}
-
-// Add reference values for Figma P3 orange
-const figmaP3References = {
-  oklch: 'oklch(74.32% 0.2194 51.36)',
-  hex: '#ff7e00',
-  rgb: 'rgb(255, 126, 0)',
-  hsl: 'hsl(29.54 100% 50%)',
-  p3: 'color(display-p3 1 0.502 0)',
-  oklab: 'oklab(74.32% 0.14 0.17)',
-  vec: 'vec(1.17638, 0.18288, -0.03661, 1)',
-  figmaP3: '#ff8000ff'
-};
-
-function processFigmaP3(figmaP3Color: string): CuloriColor {
-  try {
-    if (!figmaP3Color.startsWith('Figma P3')) {
-      throw new Error("Invalid Figma P3 format");
-    }
-
-    const cleanValue = figmaP3Color.replace(/^(Figma P3) /, '').trim();
-    if (!/^#[0-9A-F]{8}$/i.test(cleanValue)) {
-      return { mode: 'p3', r: 0, g: 0, b: 0, alpha: 1 };
-    }
-
-    // Parse components
-    const components = {
-      r: parseInt(cleanValue.slice(1, 3), 16) / 255,
-      g: parseInt(cleanValue.slice(3, 5), 16) / 255,
-      b: parseInt(cleanValue.slice(5, 7), 16) / 255,
-      alpha: parseInt(cleanValue.slice(7, 9), 16) / 255
-    };
-
-    // Create P3 color
-    const p3Color: P3Color = {
-      mode: 'p3' as const,
-      ...components
-    };
-
-    return p3Color;
-  } catch (error) {
-    showToast({
-      style: Toast.Style.Failure,
-      title: "Invalid Figma P3 Color",
-      message: error instanceof Error 
-        ? error.message 
-        : "Failed to process color format",
-    });
-    return { mode: 'p3', r: 0, g: 0, b: 0, alpha: 1 };
-  }
-}
-
-// Helper function to check if format is sRGB
-function isSRGBFormat(format: ColorFormat): boolean {
-  return srgbFormats.includes(format);
-}
-
-// Add helper to detect if input is a P3 hex value
-function isP3HexFormat(input: string): boolean {
-  return /^#[0-9A-F]{8}$/i.test(input);
-}
-
-// Add helper function at the top level
-function isP3Format(format: ColorFormat): boolean {
-  return ['p3', 'vec', 'lrgb', 'figmaP3'].includes(format);
-}
+/* eslint-enable @typescript-eslint/no-unused-vars */

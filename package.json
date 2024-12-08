@@ -1,13 +1,11 @@
 {
   "name": "oklch-color-converter",
-  "title": "OKLCH Color Converter",
-  "description": "Advanced color space conversion and manipulation tools with OKLCH support",
-  "icon": "extension-icon.png",
-  "author": "you",
-  "categories": [
-    "Other",
-    "Formatters"
-  ],
+  "title": "Oklch Color Converter",
+  "description": "Convert colors between formats with wide gamut support",
+  "version": "1.0.0",
+  "author": "strongeron",
+  "icon": "icon.png",
+  "categories": ["Developer Tools"],
   "license": "MIT",
   "commands": [
     {

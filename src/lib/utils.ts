@@ -1,1 +1,1 @@
-// Delete this file - functionality is in convert-color.tsx
+export {}; // Makes this a module

@@ -879,7 +879,8 @@ export default function Command() {
     }
 
     try {
-      let color;
+      let color: CuloriColor | null;
+      
       if (searchText.startsWith('Figma P3')) {
         color = processFigmaP3(searchText);
       } else if (isP3HexFormat(searchText)) {
@@ -904,7 +905,8 @@ export default function Command() {
         "hsl"
       ];
 
-      const results = formats.map((format) => formatColor(color, format));
+      // Now TypeScript knows color is not null
+      const results = formats.map((format) => formatColor(color as CuloriColor, format));
       setColors(results);
     } catch (error) {
       showToast({

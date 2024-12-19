@@ -1,5 +1,11 @@
 # Color Converter Changelog
 
+## [Fix Build Configuration] - 2024-01-19
+
+- Fix build configuration to use convert-color.tsx
+- Fix package.json build script to use correct environment flag (-e dist)
+- Resolve dependency sync issues
+
 ## [Fix ESLint and Formatting] - {PR_MERGE_DATE}
 
 - Fix ESLint configuration

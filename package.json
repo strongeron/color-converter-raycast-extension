@@ -2,7 +2,7 @@
   "name": "oklch-color-converter",
   "title": "Oklch Color Converter",
   "description": "Convert colors between formats with wide gamut support",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "strongeron",
   "icon": "icon.png",
   "categories": ["Design Tools"],
